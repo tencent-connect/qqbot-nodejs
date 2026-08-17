@@ -42,6 +42,18 @@ export function streamMessagePath(openid: string): string {
   return `/v2/users/${openid}/stream_messages`;
 }
 
+export function panelsPath(): string {
+  return "/v2/panels";
+}
+
+export function panelPath(panelId: string): string {
+  return `/v2/panels/${panelId}`;
+}
+
+export function panelTargetPath(panelId: string): string {
+  return `/v2/panels/${panelId}/target`;
+}
+
 export function gatewayPath(): string {
   return "/gateway";
 }

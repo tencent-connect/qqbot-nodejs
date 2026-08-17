@@ -17,6 +17,7 @@ export {
   type MessageApiConfig,
   getNextMsgSeq,
 } from "./api/messages.js";
+export { PanelApi } from "./api/panels.js";
 export {
   MediaApi,
   type MediaApiConfig,
@@ -49,6 +50,9 @@ export {
   interactionPath,
   mediaUploadPath,
   messagePath,
+  panelPath,
+  panelsPath,
+  panelTargetPath,
   streamMessagePath,
   uploadCompletePath,
   uploadPartFinishPath,

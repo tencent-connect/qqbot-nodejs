@@ -139,7 +139,24 @@ await stream.complete();
 
 QQ 开放平台限制：`stream_messages` 仅在 C2C（私聊）开放。
 
-### 6. 事件监听
+### 6. 指令面板
+
+发布用户点击输入框「/」时看到的指令列表：
+
+```ts
+await bot.createPanel({
+  scope: "c2c",
+  target_type: "all",
+  panel: {
+    remark: "my-bot",
+    items: [{ type: "command", name: "/help", desc: "查看全部指令" }],
+  },
+});
+```
+
+面板按应用维度累积——用 `panel.remark` 给自己的面板打标识，启动时先 `listPanels()` 认领再 `updatePanel()`，不要每次都新建。详见 [USAGE.md](./USAGE.md#13-指令面板v2panels)。
+
+### 7. 事件监听
 
 ```ts
 bot.on("ready", () => console.log("connected"));
@@ -149,7 +166,7 @@ bot.on("message", (ctx, msg) => { /* C2C / Group / Guild / DM */ });
 bot.on("interaction", (ctx, event) => { /* button click etc. */ });
 ```
 
-### 7. 协议层直接访问
+### 8. 协议层直接访问
 
 ```ts
 import {

@@ -189,6 +189,107 @@ export interface InlineKeyboard {
   };
 }
 
+// ============ Command Panel ============
+
+/**
+ * Scope a command panel applies to.
+ *
+ * Wider than {@link ChatScope}: panels also cover channels and guild DMs,
+ * which have no message-path counterpart in this SDK.
+ */
+export type PanelScope = "c2c" | "group" | "channel" | "dm";
+
+/** Whether a panel applies to every peer (`all`) or an explicit list (`specific`). */
+export type PanelTargetType = "all" | "specific";
+
+/** Panel entry kind: type a command into the input box, or open a URL. */
+export type PanelItemType = "command" | "link";
+
+/** One entry of a command panel. */
+export interface PanelItem {
+  /** Display name, up to 14 characters (a CJK character counts as two). */
+  name?: string;
+  /** Description shown under the name, up to 30 characters. */
+  desc?: string;
+  type?: PanelItemType;
+  /** Restrict the entry to group administrators. */
+  only_admin?: boolean;
+  /** Destination URL. Only meaningful when `type` is `link`. */
+  link?: string;
+}
+
+/** Panel configuration carried by create/update requests and query responses. */
+export interface Panel {
+  /** Entries, up to 20. */
+  items?: PanelItem[];
+  /** Free-form note, up to 255 characters. Useful to identify your own panel. */
+  remark?: string;
+  version?: number;
+}
+
+/** A stored panel as returned by the query endpoints. */
+export interface PanelRecord {
+  panel_id: string;
+  scope: PanelScope;
+  target_type: PanelTargetType;
+  panel: Panel;
+  /** RFC3339 timestamp. */
+  created_at: string;
+  /** RFC3339 timestamp. */
+  updated_at: string;
+  version: number;
+  /** Associated users. Only present on the detail endpoint, when `specific`. */
+  user_openids?: string[];
+  /** Associated groups. Only present on the detail endpoint, when `specific`. */
+  group_openids?: string[];
+}
+
+/** Query parameters for listing panels. */
+export interface ListPanelsQuery {
+  scope: PanelScope;
+  /** Paging cursor. Omit for the first page. */
+  cursor?: string;
+  /** Page size, defaults to 20, capped at 50. */
+  limit?: number;
+}
+
+export interface ListPanelsResponse {
+  records: PanelRecord[];
+  /** Empty string on the last page. */
+  next_cursor: string;
+  is_end: boolean;
+}
+
+/** Request body for creating a panel. */
+export interface CreatePanelRequest {
+  scope: PanelScope;
+  /** Defaults to `all` on the platform side. `specific` only applies to c2c/group. */
+  target_type?: PanelTargetType;
+  /** Up to 20. Only for scope `c2c` with `target_type: "specific"`. */
+  user_openids?: string[];
+  /** Up to 20. Only for scope `group` with `target_type: "specific"`. */
+  group_openids?: string[];
+  panel: Panel;
+}
+
+export interface CreatePanelResponse {
+  panel_id: string;
+}
+
+export interface UpdatePanelResponse {
+  /** Version after this update. */
+  version: number;
+}
+
+/** Request body for adding or removing the peers a `specific` panel applies to. */
+export interface UpdatePanelTargetRequest {
+  op: "add" | "del";
+  /** Up to 20, for c2c panels. */
+  user_openids?: string[];
+  /** Up to 20, for group panels. */
+  group_openids?: string[];
+}
+
 // ============ Interaction Event ============
 
 export interface InteractionEvent {
