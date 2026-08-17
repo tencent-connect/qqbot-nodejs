@@ -159,6 +159,25 @@ await stream.complete();
 
 QQ platform constraint: `stream_messages` is available for **C2C only**.
 
+### Command panel
+
+Publish the list clients show when the user taps "/" in the input box:
+
+```ts
+await bot.createPanel({
+  scope: "c2c",
+  target_type: "all",
+  panel: {
+    remark: "my-bot",
+    items: [{ type: "command", name: "/help", desc: "list commands" }],
+  },
+});
+```
+
+Panels accumulate per application — tag yours via `panel.remark`, find it with
+`listPanels()` and `updatePanel()` it rather than creating one on every start.
+See [USAGE.md](./USAGE.md#13-指令面板v2panels).
+
 ### Events
 
 ```ts

@@ -23,12 +23,13 @@
 - [10. 媒体上传与发送](#10-媒体上传与发送)
 - [11. C2C 流式消息（`stream_messages`）](#11-c2c-流式消息stream_messages)
 - [12. 交互事件（按钮）](#12-交互事件按钮)
-- [13. 错误处理](#13-错误处理)
-- [14. 高级用法](#14-高级用法)
-- [15. 协议层 API（`/protocol`）](#15-协议层-apiprotocol)
-- [16. 平台限制与最佳实践](#16-平台限制与最佳实践)
-- [17. 模块结构](#17-模块结构)
-- [18. 内置示例](#18-内置示例)
+- [13. 指令面板（`/v2/panels`）](#13-指令面板v2panels)
+- [14. 错误处理](#14-错误处理)
+- [15. 高级用法](#15-高级用法)
+- [16. 协议层 API（`/protocol`）](#16-协议层-apiprotocol)
+- [17. 平台限制与最佳实践](#17-平台限制与最佳实践)
+- [18. 模块结构](#18-模块结构)
+- [19. 内置示例](#19-内置示例)
 
 ---
 
@@ -502,9 +503,99 @@ bot.on("interaction", async (ctx, event) => {
 | 4 | 没有权限 |
 | 5 | 仅管理员可操作 |
 
-## 13. 错误处理
+## 13. 指令面板（`/v2/panels`）
 
-### 13.1 `ApiError`
+指令面板是用户点击输入框「/」时弹出的列表。点击 `command` 类型的条目只是把它的 `name` 填进输入框，用户仍需自行发送，所以它回到 bot 这里就是一条普通消息——配合 `slashCommand` 中间件即可，收取侧不需要额外处理。
+
+### 13.1 发布指令面板
+
+```ts
+const { panel_id } = await bot.createPanel({
+  scope: 'c2c',
+  target_type: 'all',
+  panel: {
+    remark: 'my-bot',
+    items: [
+      { type: 'command', name: '/help', desc: '查看全部指令' },
+      { type: 'command', name: '/status', desc: '查看当前状态' },
+      { type: 'link', name: '文档', desc: '打开使用手册', link: 'https://example.com/docs' },
+    ],
+  },
+});
+```
+
+### 13.2 更新既有面板
+
+面板按应用维度累积，每次启动都 `createPanel` 会不断产生新面板。正确做法是先找到自己那一个再更新——给 `panel.remark` 打上标识，就能在列表里认领：
+
+```ts
+async function publishPanel(bot: QQBot, items: PanelItem[]) {
+  const { records } = await bot.listPanels({ scope: 'c2c' });
+  const mine = records.find((r) => r.panel.remark === 'my-bot');
+
+  if (!mine) {
+    const { panel_id } = await bot.createPanel({
+      scope: 'c2c',
+      target_type: 'all',
+      panel: { items, remark: 'my-bot', version: 1 },
+    });
+    return panel_id;
+  }
+
+  // version 每次递增，客户端据此判断是否需要重新拉取
+  await bot.updatePanel(mine.panel_id, {
+    items,
+    remark: 'my-bot',
+    version: (mine.panel.version ?? 0) + 1,
+  });
+  return mine.panel_id;
+}
+```
+
+列表接口是分页的，面板较多时按游标翻页：
+
+```ts
+let cursor: string | undefined;
+do {
+  const page = await bot.listPanels({ scope: 'c2c', cursor, limit: 50 });
+  for (const record of page.records) console.log(record.panel_id, record.panel.remark);
+  cursor = page.next_cursor;
+} while (cursor);
+```
+
+### 13.3 只对部分用户生效
+
+`target_type: 'specific'` 的面板只对关联对象可见，关联关系用 `updatePanelTarget` 增删（`all` 面板不支持，会返回 `40030021`）：
+
+```ts
+const { panel_id } = await bot.createPanel({
+  scope: 'group',
+  target_type: 'specific',
+  group_openids: ['GROUP_OPENID'],
+  panel: { items, remark: 'beta-only' },
+});
+
+await bot.updatePanelTarget(panel_id, { op: 'add', group_openids: ['ANOTHER_GROUP'] });
+await bot.updatePanelTarget(panel_id, { op: 'del', group_openids: ['GROUP_OPENID'] });
+```
+
+### 13.4 平台限制
+
+| 项目 | 限制 |
+| :--- | :--- |
+| `panel.items` | 最多 20 条 |
+| `item.name` | 最多 14 字符（一个汉字算 2 个） |
+| `item.desc` | 最多 30 字符 |
+| `panel.remark` | 最多 255 字符 |
+| `user_openids` / `group_openids` | 单次最多 20 个 |
+| 查询频率 | 30 QPM（`listPanels` / `getPanel`） |
+| 写入频率 | 10 QPM（`createPanel` / `updatePanel` / `deletePanel`） |
+
+`scope` 可取 `c2c`、`group`、`channel`、`dm`；`target_type: 'specific'` 只有 `c2c` 和 `group` 支持。
+
+## 14. 错误处理
+
+### 14.1 `ApiError`
 
 所有 HTTP 调用失败都会抛 `ApiError`：
 
@@ -532,7 +623,7 @@ try {
 | `bizCode` | 业务错误码（`code` 或 `err_code`） |
 | `bizMessage` | 服务端原始 message |
 
-### 13.2 `UploadDailyLimitExceededError`
+### 14.2 `UploadDailyLimitExceededError`
 
 当大文件上传命中 `upload_prepare` 的日额度限制时（错误码 `UPLOAD_PREPARE_FALLBACK_CODE`）会抛出：
 
@@ -548,7 +639,7 @@ try {
 }
 ```
 
-### 13.3 重试
+### 14.3 重试
 
 SDK 已为以下场景内置自动重试，**调用方不需要再包一层 retry**：
 
@@ -557,9 +648,9 @@ SDK 已为以下场景内置自动重试，**调用方不需要再包一层 retr
 - `complete_upload`：3 次指数退避。
 - WebSocket Gateway：完整退避序列 + token 失效处理。
 
-## 14. 高级用法
+## 15. 高级用法
 
-### 14.1 跨进程恢复 session
+### 15.1 跨进程恢复 session
 
 通过 `sessionPersistence` 钩子把 `sessionId` 与 `lastSeq` 写入磁盘 / Redis：
 
@@ -584,7 +675,7 @@ const bot = new QQBot({ appId, appSecret, sessionPersistence: persistence });
 
 进程重启后，SDK 会优先尝试 RESUME，避免 IDENTIFY 重新计算 intents。
 
-### 14.2 多 Bot 并存
+### 15.2 多 Bot 并存
 
 每个 `QQBot` 实例自带独立的 `TokenManager` / `ApiClient` / `UploadCache` / `GatewayConnection`，
 没有任何模块级全局状态，可以放心地在同一进程里跑多个机器人：
@@ -596,7 +687,7 @@ const botB = new QQBot({ appId: "B", appSecret: "..." });
 await Promise.all([botA.start(), botB.start()]);
 ```
 
-### 14.3 自定义 intents
+### 15.3 自定义 intents
 
 ```ts
 import { FULL_INTENTS } from "@tencent-connect/qqbot-nodejs/protocol";
@@ -607,7 +698,7 @@ const bot = new QQBot({
 });
 ```
 
-### 14.4 Logger 接口
+### 15.4 Logger 接口
 
 ```ts
 interface Logger {
@@ -620,14 +711,14 @@ interface Logger {
 
 可直接传 `console`，也可以适配 pino / winston 等。
 
-### 14.5 检查 token 状态
+### 15.5 检查 token 状态
 
 ```ts
 const status = bot.tokenManager.getStatus(appId);
 // { status: "valid" | "expired" | "refreshing" | "none", expiresAt: ... }
 ```
 
-## 15. 协议层 API（`/protocol`）
+## 16. 协议层 API（`/protocol`）
 
 如果你需要 SDK 没暴露的能力（例如自定义 retry policy、自己实现 session 持久化层、
 直接发原始 WebSocket 包），可以从子入口直接拿到所有原语：
@@ -664,7 +755,7 @@ import {
 } from "@tencent-connect/qqbot-nodejs/protocol";
 ```
 
-### 15.1 直接组装一个最小客户端
+### 16.1 直接组装一个最小客户端
 
 ```ts
 import {
@@ -686,7 +777,7 @@ await messageApi.sendMessage(
 
 这条路径完全不依赖 `QQBot` / `GatewayConnection`，适合 webhook 模式的部署。
 
-### 15.2 频道（Guild）/ 频道私信（DM）
+### 16.2 频道（Guild）/ 频道私信（DM）
 
 QQ 频道接口在高层 facade 里没有便捷方法（绝大多数官方机器人在群和私聊场景），
 请直接用 `MessageApi`：
@@ -707,9 +798,9 @@ await bot.messageApi.sendDmMessage({
 });
 ```
 
-## 16. 平台限制与最佳实践
+## 17. 平台限制与最佳实践
 
-### 16.1 QQ 平台硬性限制
+### 17.1 QQ 平台硬性限制
 
 - `stream_messages` 只支持 C2C 私聊，不支持群聊。
 - 流式消息节流不能低于 `300ms`。
@@ -718,7 +809,7 @@ await bot.messageApi.sendDmMessage({
 - 群里收到的入站消息携带的是 `member_openid`，不是 QQ 号。
 - `upload_prepare` 有日额度，命中后会抛 `UploadDailyLimitExceededError`。
 
-### 16.2 推荐做法
+### 17.2 推荐做法
 
 - 用 `AbortController` 接管 `bot.start()`，让 SIGINT/SIGTERM 优雅退出。
 - 长期运行的服务务必使用 `sessionPersistence`，缩短重启后的恢复时间。
@@ -727,7 +818,7 @@ await bot.messageApi.sendDmMessage({
 - `logger.debug` 默认会打印请求体，敏感信息已脱敏（`access_token` / `file_data`），
   生产环境关掉 debug 即可。
 
-### 16.3 不推荐的做法
+### 17.3 不推荐的做法
 
 - ❌ 在 `bot.on("message", ...)` 回调里用 `await new Promise(() => {})` 之类阻塞它。
   下一条消息会一直等。
@@ -735,7 +826,7 @@ await bot.messageApi.sendDmMessage({
 - ❌ 用流式消息发"发完一句新一句"的需求 —— 那是 `sendText` 的活，
   `stream_messages` 是 **同一条消息原地不断改写**。
 
-## 17. 模块结构
+## 18. 模块结构
 
 ```
 src/
@@ -765,7 +856,7 @@ src/
     └── index.ts                  protocol 子入口
 ```
 
-## 18. 内置示例
+## 19. 内置示例
 
 仓库 `examples/` 下提供 3 个可直接运行的示例：
 

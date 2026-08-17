@@ -34,6 +34,7 @@ import { ApiClient } from "./protocol/api/api-client.js";
 import { ChunkedMediaApi } from "./protocol/api/media-chunked.js";
 import { MediaApi } from "./protocol/api/media.js";
 import { MessageApi } from "./protocol/api/messages.js";
+import { PanelApi } from "./protocol/api/panels.js";
 import { TokenManager } from "./protocol/api/token.js";
 import { GatewayConnection, type SessionPersistencePort } from "./protocol/gateway/gateway-connection.js";
 import type { InboundMessage } from "./protocol/gateway/event-dispatcher.js";
@@ -42,12 +43,20 @@ import type { EventTransport, WebhookServerAdapter } from "./protocol/transport/
 import {
   MediaFileType,
   type ChatScope,
+  type CreatePanelRequest,
+  type CreatePanelResponse,
   type Credentials,
   type GatewayAccount,
   type InlineKeyboard,
   type InteractionEvent,
+  type ListPanelsQuery,
+  type ListPanelsResponse,
   type Logger,
   type MessageResponse,
+  type Panel,
+  type PanelRecord,
+  type UpdatePanelResponse,
+  type UpdatePanelTargetRequest,
   type UploadMediaResponse,
 } from "./protocol/types.js";
 import { LARGE_FILE_THRESHOLD, sanitizeFileName } from "./protocol/utils/file-utils.js";
@@ -261,6 +270,7 @@ export class QQBot {
   readonly messageApi: MessageApi;
   readonly mediaApi: MediaApi;
   readonly chunkedMediaApi: ChunkedMediaApi;
+  readonly panelApi: PanelApi;
 
   private readonly opts: QQBotOptions;
   private readonly logger: Logger;
@@ -319,6 +329,7 @@ export class QQBot {
       markdownSupport: options.markdownSupport === true,
       logger: this.logger,
     });
+    this.panelApi = new PanelApi(this.apiClient, this.tokenManager);
 
     const cacheAdapter = {
       computeHash: (data: string) => this.uploadCache.computeHash(data),
@@ -895,6 +906,48 @@ export class QQBot {
       fullPath = `${path}?${params.toString()}`;
     }
     return this.apiClient.request<T>(token, method, fullPath, body ?? undefined);
+  }
+
+  // ============ Command panel ============
+
+  /**
+   * List the command panels registered for one scope.
+   *
+   * Paged: pass the returned `next_cursor` back as `cursor` until `is_end`.
+   */
+  listPanels(query: ListPanelsQuery): Promise<ListPanelsResponse> {
+    return this.panelApi.listPanels(this.creds, query);
+  }
+
+  /** Fetch one panel, including the peers it is associated with. */
+  getPanel(panelId: string): Promise<PanelRecord> {
+    return this.panelApi.getPanel(this.creds, panelId);
+  }
+
+  /**
+   * Create a command panel.
+   *
+   * Panels accumulate per application, so a bot that publishes its command
+   * list on every start should look for its own panel first (tag it via
+   * `panel.remark`) and {@link updatePanel} that one, rather than creating
+   * another each time.
+   */
+  createPanel(request: CreatePanelRequest): Promise<CreatePanelResponse> {
+    return this.panelApi.createPanel(this.creds, request);
+  }
+
+  /** Replace a panel's entries. Returns the version after the update. */
+  updatePanel(panelId: string, panel: Panel): Promise<UpdatePanelResponse> {
+    return this.panelApi.updatePanel(this.creds, panelId, panel);
+  }
+
+  deletePanel(panelId: string): Promise<void> {
+    return this.panelApi.deletePanel(this.creds, panelId);
+  }
+
+  /** Add or remove the peers a `specific` panel applies to. */
+  updatePanelTarget(panelId: string, request: UpdatePanelTargetRequest): Promise<void> {
+    return this.panelApi.updatePanelTarget(this.creds, panelId, request);
   }
 
   // ============ Streaming ============
