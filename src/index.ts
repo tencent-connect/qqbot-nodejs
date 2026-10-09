@@ -152,6 +152,11 @@ export {
 
 export type { InboundMessage } from "./protocol/gateway/event-dispatcher.js";
 
+// Gateway lifecycle: `start()` rejects with GatewayError; `disconnected` carries GatewayDisconnect.
+export { GatewayError, GatewayErrorCode } from "./protocol/gateway/errors.js";
+export type { GatewayDisconnect } from "./protocol/gateway/gateway-connection.js";
+export type { ReconnectPolicy } from "./protocol/gateway/reconnect.js";
+
 export type {
   WebhookRequest,
   WebhookResponse,

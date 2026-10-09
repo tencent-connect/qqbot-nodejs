@@ -35,8 +35,13 @@ import { ChunkedMediaApi } from "./protocol/api/media-chunked.js";
 import { MediaApi } from "./protocol/api/media.js";
 import { MessageApi } from "./protocol/api/messages.js";
 import { TokenManager } from "./protocol/api/token.js";
-import { GatewayConnection, type SessionPersistencePort } from "./protocol/gateway/gateway-connection.js";
+import {
+  GatewayConnection,
+  type GatewayDisconnect,
+  type SessionPersistencePort,
+} from "./protocol/gateway/gateway-connection.js";
 import type { InboundMessage } from "./protocol/gateway/event-dispatcher.js";
+import { resolveReconnectPolicy, type ReconnectPolicy } from "./protocol/gateway/reconnect.js";
 import { WebhookTransport } from "./protocol/transport/webhook.js";
 import type { EventTransport, WebhookServerAdapter } from "./protocol/transport/types.js";
 import {
@@ -145,6 +150,13 @@ export interface QQBotOptions {
   sessionPersistence?: SessionPersistencePort;
   /** Custom intent mask. Defaults to FULL_INTENTS (group + c2c + interaction). */
   intents?: number;
+  /**
+   * WebSocket reconnect budget. `maxAttempts` defaults to `Infinity` (retry
+   * forever). When a finite budget is exhausted, `start()` rejects with a
+   * `GatewayError` (`GATEWAY_RETRY_EXHAUSTED`) — set one when an outer
+   * supervisor restarts the bot.
+   */
+  reconnect?: Partial<ReconnectPolicy>;
   /** Override the upload cache. Defaults to a private in-memory cache. */
   uploadCache?: UploadCache;
 
@@ -207,6 +219,7 @@ export interface RawEventContext {
 export type QQBotEventMap = {
   ready: (data: unknown) => void;
   resumed: (data: unknown) => void;
+  disconnected: (event: GatewayDisconnect) => void;
   error: (err: Error) => void;
   message: (ctx: MiddlewareContext, msg: QQBotInboundMessage) => void | Promise<void>;
   interaction: (ctx: InteractionContext, event: InteractionEvent) => void | Promise<void>;
@@ -272,6 +285,7 @@ export class QQBot {
   private readonly handlers: { [K in keyof QQBotEventMap]: Set<QQBotEventMap[K]> } = {
     ready: new Set(),
     resumed: new Set(),
+    disconnected: new Set(),
     error: new Set(),
     message: new Set(),
     interaction: new Set(),
@@ -289,6 +303,7 @@ export class QQBot {
     if (!options.appSecret) {
       throw new Error("QQBot: appSecret is required");
     }
+    resolveReconnectPolicy(options.reconnect); // fail fast on an invalid budget
     this.opts = options;
     this.logger = options.logger ?? noopLogger;
     this.userAgent = options.userAgent ?? `qqbot-nodejs/0.1.0 (Node/${process.versions.node})`;
@@ -448,43 +463,53 @@ export class QQBot {
    * - **Webhook mode**: starts an HTTP server to receive POST callbacks.
    *
    * Resolves when {@link stop} or the abort signal terminates the connection.
+   * Rejects when startup fails, or — in WebSocket mode — with a `GatewayError`
+   * when a finite `reconnect.maxAttempts` is exhausted (`GATEWAY_RETRY_EXHAUSTED`) or the
+   * gateway closes with a non-retryable code (`GATEWAY_FATAL_CLOSE`). Resources
+   * are released either way, so the bot can be started again.
    */
   async start(externalSignal?: AbortSignal): Promise<void> {
-    if (this.gateway) {
-      throw new Error("QQBot: already started");
-    }
-    this.abortController = new AbortController();
-    if (externalSignal) {
-      if (externalSignal.aborted) {
-        this.abortController.abort();
-      } else {
-        externalSignal.addEventListener("abort", () => this.abortController?.abort(), {
-          once: true,
-        });
-      }
-    }
-
-    const transportMode = this.opts.transport ?? "websocket";
-
-    if (transportMode === "webhook") {
-      await this.startWebhook();
-    } else if (transportMode === "websocket") {
-      await this.startWebSocket();
+    if (this.abortController) throw new Error("QQBot: already started");
+    // The controller doubles as the run's ownership token: only the run that
+    // still owns it may reset shared state (see stop()).
+    const controller = new AbortController();
+    this.abortController = controller;
+    const onAbort = () => controller.abort();
+    if (externalSignal?.aborted) {
+      controller.abort();
     } else {
-      // Custom EventTransport instance
-      const custom = transportMode as EventTransport;
-      await custom.start();
+      externalSignal?.addEventListener("abort", onAbort, { once: true });
     }
 
-    // Cleanup
-    this.tokenManager.stopBackgroundRefresh(this.creds.appId);
-    this.gateway = null;
-    this.abortController = null;
+    try {
+      if (controller.signal.aborted) return;
+      const transportMode = this.opts.transport ?? "websocket";
+      if (transportMode === "webhook") {
+        await this.startWebhook(controller.signal);
+      } else if (transportMode === "websocket") {
+        await this.startWebSocket(controller.signal);
+      } else {
+        await this.startCustomTransport(transportMode, controller.signal);
+      }
+    } finally {
+      externalSignal?.removeEventListener("abort", onAbort);
+      if (this.abortController === controller) this.releaseRun();
+    }
   }
 
-  /** Stop the transport and background refreshers. */
+  /**
+   * Stop the transport and background refreshers.
+   *
+   * Ownership is released synchronously, so `start()` may be called again
+   * right away; the previous `start()` promise still resolves on its own.
+   */
   stop(): void {
-    this.abortController?.abort();
+    const controller = this.abortController;
+    this.releaseRun();
+    controller?.abort();
+  }
+
+  private releaseRun(): void {
     this.tokenManager.stopBackgroundRefresh(this.creds.appId);
     this.gateway = null;
     this.abortController = null;
@@ -500,7 +525,7 @@ export class QQBot {
    * - `"async"`: fires the token fetch in the background and starts the
    *   background refresher immediately — trades fail-fast for faster startup.
    */
-  private async initToken(): Promise<void> {
+  private async initToken(signal: AbortSignal): Promise<void> {
     const mode = this.opts.tokenPrefetch ?? "sync";
 
     if (mode === "sync") {
@@ -513,20 +538,22 @@ export class QQBot {
       });
     }
 
-    this.tokenManager.startBackgroundRefresh(this.creds.appId, this.creds.clientSecret);
+    if (!signal.aborted) this.tokenManager.startBackgroundRefresh(this.creds.appId, this.creds.clientSecret);
   }
 
   // ============ Transport: WebSocket ============
 
-  private async startWebSocket(): Promise<void> {
-    await this.initToken();
+  private async startWebSocket(signal: AbortSignal): Promise<void> {
+    await this.initToken(signal);
+    if (signal.aborted) return;
 
     this.gateway = new GatewayConnection({
       account: this.account,
-      abortSignal: this.abortController!.signal,
+      abortSignal: signal,
       log: this.logger,
       userAgent: this.userAgent,
       intents: this.opts.intents,
+      reconnect: this.opts.reconnect,
       session: this.opts.sessionPersistence,
       getAccessToken: () =>
         this.tokenManager.getAccessToken(this.creds.appId, this.creds.clientSecret),
@@ -542,6 +569,9 @@ export class QQBot {
       },
       onError: (err) => {
         void this.emit("error", err);
+      },
+      onDisconnected: (event) => {
+        void this.emit("disconnected", event);
       },
       onMessage: (raw) => this.handleInboundMessage(raw),
       onInteraction: (event) => {
@@ -559,8 +589,9 @@ export class QQBot {
 
   // ============ Transport: Webhook ============
 
-  private async startWebhook(): Promise<void> {
-    await this.initToken();
+  private async startWebhook(signal: AbortSignal): Promise<void> {
+    await this.initToken(signal);
+    if (signal.aborted) return;
 
     const webhook = new WebhookTransport(
       {
@@ -571,7 +602,7 @@ export class QQBot {
         server: this.opts.webhook?.server,
         accountId: this.account.accountId,
         log: this.logger,
-        abortSignal: this.abortController!.signal,
+        abortSignal: signal,
       },
       {
         onReady: (data) => {
@@ -593,6 +624,18 @@ export class QQBot {
     );
 
     await webhook.start();
+  }
+
+  // ============ Transport: custom ============
+
+  private async startCustomTransport(transport: EventTransport, signal: AbortSignal): Promise<void> {
+    const onAbort = () => transport.stop();
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      await transport.start();
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 
   // ============ Shared inbound message handler ============

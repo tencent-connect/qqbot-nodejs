@@ -34,7 +34,7 @@
 
 ## 1. 环境要求
 
-- Node.js `>= 18`（依赖全局 `fetch` 与 `AbortController`）。
+- Node.js `>= 20`（依赖全局 `fetch` 与 `AbortController`）。
 - TypeScript 项目建议 `>= 5.0`，本 SDK 使用 ESM 输出。
 - 包是纯 ESM（`"type": "module"`）。如果你的工程是 CJS，请通过动态 `import()` 加载。
 
@@ -188,6 +188,9 @@ const bot = new QQBot({
   userAgent: "my-app/1.0.0",      // HTTP / WS 的 UA；默认 qqbot-nodejs/<version>
   baseUrl: "https://api.sgroup.qq.com",  // 仅用于测试 mock
 
+  transport: "websocket",         // "websocket"（默认）| "webhook" | 自定义 EventTransport
+  tokenPrefetch: "sync",          // "sync"（默认，启动即拉 token，失败则 start() 拒绝）| "async"
+  reconnect: { maxAttempts: 10 }, // WebSocket 重连预算；默认无限重连，见 §7.3
   intents: FULL_INTENTS,          // 自定义 intent 掩码；默认 FULL_INTENTS
   sessionPersistence: { ... },    // 跨进程恢复 session；见 §14.1
   uploadCache: new UploadCache(), // 自定义上传缓存；默认 SDK 内部独享一份
@@ -207,10 +210,32 @@ await bot.start(externalAbortSignal); // 由调用方控制何时停止
 ```
 
 `start()` 会：
-1. 立刻同步获取一次 `access_token`（暴露认证错误，提前失败）。
+1. 获取一次 `access_token`（`tokenPrefetch: "sync"` 时等待结果，凭证错误提前暴露）。
 2. 启动后台 token 刷新循环。
-3. 创建并连接 WebSocket Gateway。
-4. 在 abort 之前持续接收事件、自动重连。
+3. 创建并连接 WebSocket Gateway（或启动 Webhook 服务）。
+4. 持续接收事件、自动重连，直到 `stop()` / abort 时正常返回。
+
+`start()` 仅在以下情况拒绝，拒绝前已释放连接与 token 刷新任务，可直接再次 `start()`：
+
+| 拒绝 | 原因 | 建议处理 |
+|---|---|---|
+| `GatewayError` `GATEWAY_FATAL_CLOSE` | 4914 下线/仅沙箱、4915 被封禁；`err.closeCode` 为关闭码 | 需人工处理，不要重启 |
+| `GatewayError` `GATEWAY_RETRY_EXHAUSTED` | 仅在设置了有限 `reconnect.maxAttempts` 时；`err.cause` 为最后一次失败原因 | 退避后重新 `start()` |
+| `Error` | 启动时拉取 token 失败（`tokenPrefetch: "sync"`） | 检查凭证 / 网络 |
+
+```ts
+import { GatewayErrorCode } from "@tencent-connect/qqbot-nodejs";
+
+try {
+  await bot.start(signal);
+} catch (err) {
+  // 按 code 判断而非 instanceof：多份模块副本时 instanceof 会失效
+  if ((err as { code?: string }).code === GatewayErrorCode.FATAL_CLOSE) markBlocked(err);
+  else scheduleRestart(err);
+}
+```
+
+终态错误只通过 `start()` 拒绝上报，不会再触发 `error` 事件。
 
 ### 7.2 停止
 
@@ -227,31 +252,51 @@ process.on("SIGTERM", () => ac.abort());
 await bot.start(ac.signal);
 ```
 
-`stop()` / abort 后：关闭 WebSocket、停止心跳与 token 后台刷新、释放定时器。
+`stop()` / abort 后：关闭 WebSocket、停止心跳与 token 后台刷新、释放定时器，`start()` 正常返回。
+`stop()` 同步释放实例，`bot.stop(); bot.start();` 可直接原地重启。
 
 ### 7.3 重连
 
-SDK 自带：
+SDK 自动完成 HELLO / IDENTIFY / RESUME / HEARTBEAT，WebSocket 握手超时 30s。断开后按关闭码处理：
 
-- HEARTBEAT / RESUME / IDENTIFY 完整握手。
-- 4004（auth failed）→ 清缓存 token 后重连。
-- 4006（invalid session）→ 清 sessionId、丢弃 lastSeq、重新 IDENTIFY。
-- 4007（seq out of range）→ 同上。
-- 4008（rate limited）→ 等待 60s 再重连。
-- 4009（session timeout）→ 当作普通重连。
-- 4914 / 4915（intents）→ 视为致命错误，不再重连。
-- 退避序列：`1s → 2s → 5s → 10s → 30s → 60s`，最多 100 次。
-- "短时间内多次断开" 触发 token 强制刷新。
+| 关闭码 | 处理 |
+|---|---|
+| 1000 / 1006 / 其他 | 保留 session，RESUME 重连 |
+| 4004 token 失效 | 清 token 缓存后重连 |
+| 4006 / 4007 / 4009 / 4900–4913 | 清 session，刷新 token，重新 IDENTIFY |
+| 4008 限流（含获取网关地址时被限流） | 等待 60s 后重连 |
+| 4914 / 4915 | 致命，不重连，`start()` 以 `GATEWAY_FATAL_CLOSE` 拒绝 |
+| op 7 RECONNECT / op 9 INVALID_SESSION | 本地断开后重连（op 9 等待 3s；不可恢复时清 session） |
+
+- 退避序列 `1s → 2s → 5s → 10s → 30s → 60s`，之后保持 60s；连续 3 次连接存活不足 5s 时，
+  下一次改为等待 60s。
+- **默认无限重连**。重连计数只在 READY / RESUMED 后清零，设置有限 `maxAttempts` 时，
+  "连上即被踢"的循环也会耗尽并以 `GATEWAY_RETRY_EXHAUSTED` 拒绝。
+
+外层已有进程级重启（如 openclaw 网关）时，建议设置上限让失败及时上交：
+
+```ts
+new QQBot({ appId, appSecret, reconnect: { maxAttempts: 10, delays: [1000, 5000, 30000] } });
+```
 
 ## 8. 事件监听
 
 ```ts
 bot.on("ready",       (data) => { /* sessionId / heartbeat 已建立 */ });
 bot.on("resumed",     (data) => { /* 重连成功 */ });
-bot.on("error",       (err) => { /* 网络 / 协议错误 */ });
+bot.on("disconnected", ({ code, reason, willReconnect }) => { /* 连接断开 */ });
+bot.on("error",       (err) => { /* 可恢复的网络 / 协议错误 */ });
 bot.on("message",     (ctx, msg) => { /* MiddlewareContext + QQBotInboundMessage */ });
 bot.on("interaction", (ctx, event) => { /* InteractionContext + InteractionEvent，按钮回调等 */ });
 ```
+
+- `disconnected`：远端关闭或 Gateway 下发 op 7 / op 9 时触发，此时已决定是否重连。
+  `code` / `reason` 为远端关闭信息（op 7 / op 9 为 `1000` + SDK 说明）；
+  `willReconnect: false` 表示 `start()` 即将拒绝。主动 `stop()` / abort 不触发。
+- `error`：仅报告可恢复的失败（每次 token / Gateway URL 请求失败、socket 错误），不结束 `start()`。
+  默认无限重连时，长时间故障下约每分钟一次，接告警请自行去重。
+
+协议层对应回调为 `GatewayConnectionOptions.onDisconnected` / `onError`。
 
 `bot.on()` 返回 `this`，支持链式：
 
@@ -263,7 +308,7 @@ bot
 ```
 
 事件回调可以是 `async` 函数，handler 抛错会被 SDK 捕获并打到 `logger.error`，
-不会传播为 unhandled rejection。
+不会传播为 unhandled rejection，也不影响重连。
 
 `bot.off(event, handler)` 可移除监听。
 
@@ -548,14 +593,19 @@ try {
 }
 ```
 
-### 13.3 重试
+### 13.3 `GatewayError`
+
+`start()` 的终态错误，字段：`code`（`GATEWAY_FATAL_CLOSE` / `GATEWAY_RETRY_EXHAUSTED`）、
+`closeCode`、`cause`。触发条件与处理方式见 §7.1。
+
+### 13.4 重试
 
 SDK 已为以下场景内置自动重试，**调用方不需要再包一层 retry**：
 
 - 上传 `POST /files`：3 次指数退避。
 - `upload_part_finish`：先快速重试，命中可重试错误码后进入 *持久重试循环*（最长 10 分钟）。
 - `complete_upload`：3 次指数退避。
-- WebSocket Gateway：完整退避序列 + token 失效处理。
+- WebSocket Gateway：按关闭码处理 + 退避重连（默认无限），见 §7.3。
 
 ## 14. 高级用法
 
@@ -565,8 +615,8 @@ SDK 已为以下场景内置自动重试，**调用方不需要再包一层 retr
 
 ```ts
 import * as fs from "node:fs";
-import { QQBot, type SessionPersistencePort, type PersistedSession }
-  from "@tencent-connect/qqbot-nodejs";
+import { QQBot } from "@tencent-connect/qqbot-nodejs";
+import type { PersistedSession, SessionPersistencePort } from "@tencent-connect/qqbot-nodejs/protocol";
 
 const FILE = "/tmp/qqbot-session.json";
 
@@ -593,7 +643,8 @@ const bot = new QQBot({ appId, appSecret, sessionPersistence: persistence });
 const botA = new QQBot({ appId: "A", appSecret: "..." });
 const botB = new QQBot({ appId: "B", appSecret: "..." });
 
-await Promise.all([botA.start(), botB.start()]);
+// 各实例独立结束 / 拒绝，用 allSettled 避免一个失败掩盖另一个
+await Promise.allSettled([botA.start(), botB.start()]);
 ```
 
 ### 14.3 自定义 intents
@@ -652,7 +703,8 @@ import {
 
   // Gateway
   FULL_INTENTS, GatewayOp, GatewayCloseCode, GatewayEvent,
-  GatewayConnection, ReconnectState,
+  GatewayConnection, ReconnectState, resolveReconnectPolicy,
+  GatewayError, GatewayErrorCode,
   decodeGatewayMessageData,
   dispatchEvent,
 
@@ -754,7 +806,8 @@ src/
     ├── gateway/
     │   ├── constants.ts          opcode / intent / close code
     │   ├── codec.ts              消息解码
-    │   ├── reconnect.ts          重连状态机
+    │   ├── reconnect.ts          重连状态机 + 重连策略
+    │   ├── errors.ts             GatewayError（start() 终态错误）
     │   ├── event-dispatcher.ts   事件 → InboundMessage
     │   └── gateway-connection.ts WebSocket 生命周期
     ├── utils/
@@ -767,12 +820,12 @@ src/
 
 ## 18. 内置示例
 
-仓库 `examples/` 下提供 3 个可直接运行的示例：
+仓库 `examples/` 下提供 5 个可直接运行的示例：
 
 | 路径 | 说明 |
 | :--- | :--- |
 | `examples/playground/` | 综合 demo：echo / stream / slow / md / file，命令行交互式切换模式 |
-| `examples/middleware/` | 完整 14 层 Koa-style 中间件管线 |
+| `examples/middleware/` | 完整 13 层 Koa-style 中间件管线 |
 | `examples/webhook/` | Webhook（HTTP 回调）传输模式 |
 | `examples/send-plain-100/` | 等触发后向指定用户发一条 100 字普通文本，验证 `messages` 通道 |
 | `examples/send-streaming-100/` | 等触发后以 ≈2 字/秒流式推送 100 字，验证 `stream_messages` 通道 |

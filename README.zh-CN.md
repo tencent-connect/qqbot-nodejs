@@ -11,6 +11,11 @@ Tencent QQ Open Platform Node.js SDK。提供与 QQ 机器人开放平台对接�
 协议层能力：HTTP REST、WebSocket / Webhook 双传输、Koa-style 中间件管线、
 消息收发、媒体上传（含大文件分块）、C2C 流式消息（stream_messages）。
 
+## 环境要求
+
+- Node.js **>= 20**（依赖全局 `fetch` 与 `AbortController`）。
+- 包是纯 ESM（`"type": "module"`）。如果你的工程是 CJS，请通过动态 `import()` 加载。
+
 ## 安装
 
 ```bash
@@ -43,10 +48,13 @@ await bot.start();
 | 示例 | 说明 |
 |------|------|
 | [playground](./examples/playground/) | 核心能力演示（文本、流式、媒体、命令） |
-| [middleware](./examples/middleware/) | 完整 14 层 Koa-style 中间件管线 |
+| [middleware](./examples/middleware/) | 完整 13 层 Koa-style 中间件管线 |
 | [webhook](./examples/webhook/) | Webhook（HTTP 回调）传输模式 |
 | [send-plain-100](./examples/send-plain-100/) | 普通文本发送对照实验 |
 | [send-streaming-100](./examples/send-streaming-100/) | 流式消息发送对照实验 |
+
+> 示例从 `process.env` 读取 `QQBOT_APP_ID` / `QQBOT_APP_SECRET` **仅为演示方便**。
+> SDK 自身从不读取环境变量，凭证一律通过 `new QQBot({ appId, appSecret })` 注入。
 
 ## 主要能力
 
@@ -144,12 +152,39 @@ QQ 开放平台限制：`stream_messages` 仅在 C2C（私聊）开放。
 ```ts
 bot.on("ready", () => console.log("connected"));
 bot.on("resumed", () => console.log("reconnected"));
-bot.on("error", (err) => console.error(err));
+bot.on("disconnected", ({ code, willReconnect }) => console.log("closed", code, willReconnect));
+bot.on("error", (err) => console.error(err)); // 可恢复的错误，不会结束 start()
 bot.on("message", (ctx, msg) => { /* C2C / Group / Guild / DM */ });
 bot.on("interaction", (ctx, event) => { /* button click etc. */ });
 ```
 
-### 7. 协议层直接访问
+### 7. 生命周期
+
+WebSocket 模式默认无限重连。`start()` 在 `stop()` / abort 时正常返回；仅在无法恢复时
+先释放连接与 token 刷新任务、再拒绝：
+
+| 拒绝 | 原因 | 处理 |
+|---|---|---|
+| `GatewayError` `GATEWAY_FATAL_CLOSE` | 4914 下线/仅沙箱、4915 被封禁 | 需人工处理，不要重启 |
+| `GatewayError` `GATEWAY_RETRY_EXHAUSTED` | 仅在设置了有限 `reconnect.maxAttempts` 时 | 退避后重启 |
+| `Error` | 启动时拉取 token 失败（默认 `tokenPrefetch: "sync"`） | 检查凭证 / 网络 |
+
+```ts
+import { GatewayErrorCode, QQBot } from "@tencent-connect/qqbot-nodejs";
+
+// 外层有进程级重启时才设上限
+const bot = new QQBot({ appId, appSecret, reconnect: { maxAttempts: 10 } });
+try {
+  await bot.start(signal);
+} catch (err) {
+  if ((err as { code?: string }).code === GatewayErrorCode.FATAL_CLOSE) markBlocked(err);
+  else scheduleRestart(err);
+}
+```
+
+`bot.stop(); bot.start();` 可原地重启。关闭码处理详见 [USAGE.md §7](./USAGE.md#7-生命周期管理)。
+
+### 8. 协议层直接访问
 
 ```ts
 import {
@@ -159,6 +194,26 @@ import {
   withRetry,
 } from "@tencent-connect/qqbot-nodejs/protocol";
 ```
+
+## 文档
+
+- **[USAGE.md](./USAGE.md)** — 完整使用指南。
+
+## 可选依赖
+
+以下 `peerDependencies` 声明为可选，只在使用对应功能时才需要安装：
+
+| 包 | 作用 |
+| ----------------- | ------------------------------------------ |
+| `silk-wasm`       | 发送语音消息（SILK 编码）                  |
+| `mpg123-decoder`  | 将 MP3 解码为 PCM，再编码为 SILK           |
+
+## 贡献
+
+欢迎提交 bug 反馈、功能建议与 PR。请先阅读：
+
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — 开发流程与 commit 规范
+- [SECURITY.md](./SECURITY.md) — 安全漏洞的报告方式
 
 ## 模块结构
 
@@ -193,7 +248,8 @@ src/
     ├── gateway/
     │   ├── constants.ts          opcode / intent / close code
     │   ├── codec.ts              消息解码
-    │   ├── reconnect.ts          重连状态机
+    │   ├── reconnect.ts          重连状态机 + 重连策略
+    │   ├── errors.ts             GatewayError（start() 终态错误）
     │   ├── event-dispatcher.ts   事件 → InboundMessage
     │   └── gateway-connection.ts WebSocket 生命周期
     ├── transport/

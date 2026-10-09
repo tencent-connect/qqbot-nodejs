@@ -151,12 +151,16 @@ export class TokenManager {
         }
       }
 
-      this.refreshControllers.delete(appId);
+      // Only release the slot we own: a stop→start cycle may already have
+      // registered a replacement loop for the same appId.
+      if (this.refreshControllers.get(appId) === controller) {
+        this.refreshControllers.delete(appId);
+      }
       this.logger?.info?.(`[qqbot:token:${appId}] Background refresh stopped`);
     };
 
     loop().catch((err) => {
-      if (this.refreshControllers.has(appId)) {
+      if (this.refreshControllers.get(appId) === controller) {
         this.refreshControllers.delete(appId);
         this.logger?.error?.(
           `[qqbot:token:${appId}] Background refresh crashed: ${formatErrorMessage(err)}`,

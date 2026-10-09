@@ -262,6 +262,21 @@ describe('TokenManager', () => {
       expect(mgr.isBackgroundRefreshRunning('app1')).toBe(false);
     });
 
+    it('keeps a replacement refresh registered when the stopped loop exits late', async () => {
+      const mgr = createManager();
+      mockFetch(mockTokenResponse('tok'));
+      mgr.startBackgroundRefresh('app1', 'secret1');
+      await vi.advanceTimersByTimeAsync(0);
+
+      mgr.stopBackgroundRefresh('app1');
+      mgr.startBackgroundRefresh('app1', 'secret1');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mgr.isBackgroundRefreshRunning('app1')).toBe(true);
+      mgr.stopBackgroundRefresh('app1');
+      expect(mgr.isBackgroundRefreshRunning('app1')).toBe(false);
+    });
+
     it('prevents duplicate background refresh for same appId', () => {
       const mgr = createManager();
       mockFetch(mockTokenResponse('tok'));

@@ -25,9 +25,14 @@ export const FULL_INTENTS =
 
 export const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 30000, 60000] as const;
 export const RATE_LIMIT_DELAY = 60000;
-export const MAX_RECONNECT_ATTEMPTS = 100;
+/** Default reconnect budget: unlimited. Set `reconnect.maxAttempts` to bound it. */
+export const MAX_RECONNECT_ATTEMPTS = Number.POSITIVE_INFINITY;
 export const MAX_QUICK_DISCONNECT_COUNT = 3;
 export const QUICK_DISCONNECT_THRESHOLD = 5000;
+/** Delay before reconnecting after opcode 9 (INVALID_SESSION). */
+export const INVALID_SESSION_DELAY = 3000;
+/** Default WebSocket upgrade timeout; bounds black-holed handshakes. */
+export const HANDSHAKE_TIMEOUT_MS = 30_000;
 
 /** Gateway opcodes used by the QQ Bot WebSocket protocol. */
 export const GatewayOp = {
