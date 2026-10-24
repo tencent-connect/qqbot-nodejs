@@ -18,6 +18,7 @@ import {
   type StreamMessageRequest,
 } from "./protocol/types.js";
 import { formatErrorMessage } from "./protocol/utils/format.js";
+import { isStreamAlreadySubmittedError } from "./protocol/types.js";
 
 /** Throttle constants — match QQ open platform best practice. */
 const DEFAULT_THROTTLE_MS = 500;
@@ -84,6 +85,12 @@ export class StreamSession {
   private flushPromise: Promise<MessageResponse | undefined> | null = null;
   private isCompleted = false;
 
+  /**
+   * 已就「平台已把该流消息定稿」告警过一次（每个会话只记一次 warn）。
+   * 用 `declare` 声明：不产生运行时字段，只作类型占位。
+   */
+  declare private _alreadySubmittedNotified?: boolean;
+
   constructor(api: MessageApi, opts: StreamSessionOptions) {
     this.api = api;
     this.opts = opts;
@@ -145,6 +152,23 @@ export class StreamSession {
     return this.flush(StreamInputState.DONE);
   }
 
+  /**
+   * Mark the session as finalized on the platform side.
+   *
+   * The QQ open platform finalizes a stream message once it has been
+   * submitted: any later REPLACE frame is rejected ("已经提交的消息内容不可修改").
+   * Callers (e.g. the openclaw-qqbot plugin) use this to stop pushing frames
+   * into a session the platform has already closed.
+   */
+  markFinalized(): void {
+    this.isCompleted = true;
+  }
+
+  /** Whether the platform has already finalized this stream message. */
+  get finalized(): boolean {
+    return this.isCompleted;
+  }
+
   /** Force-cancel without sending a DONE frame (caller must clean up). */
   cancel(): void {
     this.isCompleted = true;
@@ -200,9 +224,20 @@ export class StreamSession {
       return resp;
     } catch (err) {
       flushFailed = true;
-      this.opts.logger?.error?.(
-        `[qqbot:stream] flush failed (state=${state}): ${formatErrorMessage(err)}`,
-      );
+      if (isStreamAlreadySubmittedError(err)) {
+        // 平台已定稿该流消息：这是可预期状态，不是故障 —— 收尾并降级为 warn。
+        this.isCompleted = true;
+        if (!this._alreadySubmittedNotified) {
+          this._alreadySubmittedNotified = true;
+          this.opts.logger?.warn?.(
+            `[qqbot:stream] stream already submitted on platform - session finalized, later frames skipped (state=${state})`,
+          );
+        }
+      } else {
+        this.opts.logger?.error?.(
+          `[qqbot:stream] flush failed (state=${state}): ${formatErrorMessage(err)}`,
+        );
+      }
       throw err;
     } finally {
       this.flushInProgress = false;
