@@ -303,3 +303,24 @@ export interface GatewayAccount {
   /** Whether this bot has markdown permission. */
   markdownSupport?: boolean;
 }
+
+// ============ Stream Message Error Helpers ============
+
+/** 判定「流消息已被平台定稿」所需的错误字段（ApiError 兼容）。 */
+interface StreamApiErrorLike {
+  message?: string;
+  bizMessage?: string;
+  path?: string;
+  cause?: { message?: string };
+}
+
+// 2026-10-24 v6（STAGE F）：「已经提交的消息内容不可修改」= 平台已把该流消息定稿（submitted），
+// 之后任何 REPLACE 改写都会被拒（HTTP 404 + biz 文案）。这是可预期状态，不是插件故障。
+// 精确匹配（该 biz 文案 + stream_messages 路径）后降级为 warn；据此把会话标记为已定稿。
+export function isStreamAlreadySubmittedError(err: unknown): boolean {
+  if (!err) return false;
+  const text = `${(err as StreamApiErrorLike).bizMessage ?? ""} ${(err as StreamApiErrorLike).message ?? ""} ${(err as StreamApiErrorLike).cause?.message ?? ""}`;
+  if (!text.includes("已经提交的消息内容不可修改")) return false;
+  if (text.includes("stream_messages")) return true;
+  return typeof (err as StreamApiErrorLike).path === "string" && (err as StreamApiErrorLike).path!.includes("stream_messages");
+}
