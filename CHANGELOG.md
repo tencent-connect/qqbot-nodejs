@@ -4,6 +4,7 @@
 
 * **sdk:** new `bot.connectionState` and `connection` event — read or watch the connection state without combining individual events
 * **sdk:** new `bot.ping` and `bot.lastHeartbeatAt`
+* **sdk:** message events expose a normalized `msg.author` object with the sender avatar; flat sender fields are deprecated, and unmapped author fields stay readable without `as any`
 * **gateway:** dead connections are detected and reconnected instead of hanging
 * **gateway:** a server-requested reconnect resumes the previous session and replays messages missed while offline
 

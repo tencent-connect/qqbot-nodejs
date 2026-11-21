@@ -81,6 +81,7 @@ export { GatewayError, GatewayErrorCode } from "./gateway/errors.js";
 export {
   dispatchEvent,
   type DispatchResult,
+  type InboundAuthor,
   type InboundMessage,
   type InboundAttachment,
   type InboundMsgElement,

@@ -1,0 +1,78 @@
+{
+  "group": {
+    "id": "msg-group-1",
+    "content": "hello",
+    "timestamp": "2026-11-14T09:30:00Z",
+    "group_openid": "group-1",
+    "author": {
+      "member_openid": "member-1",
+      "username": "Alice",
+      "bot": false,
+      "avatar": "https://thirdqq.qlogo.cn/g?b=sdk&k=abc&s=140",
+      "region": "cn-east"
+    },
+    "attachments": [
+      {
+        "content_type": "image/jpeg",
+        "url": "https://multimedia.nt.qq.com.cn/download?fileid=1",
+        "filename": "photo.jpg",
+        "duration": 12
+      }
+    ],
+    "mentions": [
+      {
+        "member_openid": "member-2",
+        "username": "Bob",
+        "is_new_member": true
+      }
+    ],
+    "message_type": 0
+  },
+  "groupWithoutAvatar": {
+    "id": "msg-group-2",
+    "content": "hey",
+    "timestamp": "2026-11-14T09:33:00Z",
+    "group_openid": "group-1",
+    "author": {
+      "member_openid": "member-2",
+      "username": "Carol",
+      "avatar": ""
+    }
+  },
+  "c2c": {
+    "id": "msg-c2c-1",
+    "content": "hi",
+    "timestamp": "2026-11-14T09:31:00Z",
+    "author": {
+      "user_openid": "user-1",
+      "avatar": "https://thirdqq.qlogo.cn/g?b=sdk&k=def&s=140"
+    }
+  },
+  "guild": {
+    "id": "msg-guild-1",
+    "content": "yo",
+    "timestamp": "2026-11-14T09:32:00Z",
+    "channel_id": "channel-1",
+    "guild_id": "guild-1",
+    "author": {
+      "id": "guild-user-1",
+      "username": "Bob",
+      "avatar": "https://thirdqq.qlogo.cn/g?b=sdk&k=ghi&s=140"
+    }
+  },
+  "interaction": {
+    "id": "int-1",
+    "type": 11,
+    "version": 1,
+    "group_openid": "group-1",
+    "group_member_openid": "member-1",
+    "data": {
+      "type": 11,
+      "resolved": {
+        "button_data": "action=1",
+        "button_id": "btn-1",
+        "new_flag": true
+      }
+    }
+  }
+}
