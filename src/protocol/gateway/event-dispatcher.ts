@@ -28,6 +28,8 @@ export interface InboundAttachment {
   voice_wav_url?: string;
   /** ASR transcription text for voice messages (QQ built-in speech recognition). */
   asr_refer_text?: string;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 /** One element from the `msg_elements` array pushed by QQ. */
@@ -42,15 +44,36 @@ export interface InboundMsgElement {
 
 // ============ Inbound message ============
 
+/**
+ * Normalized message author — a closed domain model.
+ *
+ * New sender-related platform fields are mapped here (not as new top-level
+ * `InboundMessage` fields), so `keyof InboundAuthor` stays precise and
+ * consumers read one nested object instead of a growing flat list.
+ */
+export interface InboundAuthor {
+  /** Stable sender id (openid; the scope depends on `InboundMessage.kind`). */
+  id: string;
+  name?: string;
+  /** Sender avatar URL when the platform provides one. */
+  avatar?: string;
+  isBot?: boolean;
+}
+
 /** Inbound message envelope normalised across C2C / Group / Guild scopes. */
 export interface InboundMessage {
   /** Raw event type from the gateway. */
   rawEventType: string;
   /** Conversation kind. */
   kind: "c2c" | "group" | "guild" | "dm";
+  /** @deprecated Use `author.id`. */
   senderId: string;
+  /** @deprecated Use `author.name`. */
   senderName?: string;
+  /** @deprecated Use `author.isBot`. */
   senderIsBot?: boolean;
+  /** Normalized sender; new sender-related platform fields land here. */
+  author: InboundAuthor;
   content: string;
   messageId: string;
   timestamp: string;
@@ -101,6 +124,15 @@ interface Refs {
 }
 
 const REF_INDEX_KEY = "msg_idx";
+
+/**
+ * Read the sender avatar, an additive platform field that SDK types only
+ * recently declared. Missing or malformed values stay undefined so callers
+ * never have to guard the raw event themselves.
+ */
+function readAvatar(author: { avatar?: unknown }): string | undefined {
+  return typeof author.avatar === "string" && author.avatar !== "" ? author.avatar : undefined;
+}
 
 /**
  * Parse `ref_idx` and `msg_idx` from message_scene.ext + msg_elements.
@@ -171,6 +203,7 @@ export function dispatchEvent(
         rawEventType: eventType,
         kind: "c2c",
         senderId: ev.author.user_openid,
+        author: { id: ev.author.user_openid, avatar: readAvatar(ev.author) },
         content: ev.content,
         messageId: ev.id,
         timestamp: ev.timestamp,
@@ -197,6 +230,7 @@ export function dispatchEvent(
         kind: "guild",
         senderId: ev.author.id,
         senderName: ev.author.username,
+        author: { id: ev.author.id, name: ev.author.username, avatar: readAvatar(ev.author) },
         content: ev.content,
         messageId: ev.id,
         timestamp: ev.timestamp,
@@ -222,6 +256,7 @@ export function dispatchEvent(
         kind: "dm",
         senderId: ev.author.id,
         senderName: ev.author.username,
+        author: { id: ev.author.id, name: ev.author.username, avatar: readAvatar(ev.author) },
         content: ev.content,
         messageId: ev.id,
         timestamp: ev.timestamp,
@@ -248,6 +283,12 @@ export function dispatchEvent(
         senderId: ev.author.member_openid,
         senderName: ev.author.username,
         senderIsBot: ev.author.bot,
+        author: {
+          id: ev.author.member_openid,
+          name: ev.author.username,
+          isBot: ev.author.bot,
+          avatar: readAvatar(ev.author),
+        },
         content: ev.content,
         messageId: ev.id,
         timestamp: ev.timestamp,

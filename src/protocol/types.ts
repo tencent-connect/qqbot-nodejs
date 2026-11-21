@@ -73,7 +73,9 @@ export interface MessageResponse {
   /** Reference index for future quoting. */
   ext_info?: {
     ref_idx?: string;
-  };
+  } & OpenFields;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 // ============ Media Types ============
@@ -92,6 +94,8 @@ export interface UploadMediaResponse {
   file_info: string;
   ttl: number;
   id?: string;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 /** Structured metadata recorded for outbound messages. */
@@ -119,6 +123,8 @@ export interface ApiClientConfig {
 export interface UploadPart {
   index: number;
   presigned_url: string;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 export interface UploadPrepareResponse {
@@ -127,6 +133,8 @@ export interface UploadPrepareResponse {
   parts: UploadPart[];
   concurrency?: number;
   retry_timeout?: number;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 export interface UploadPrepareHashes {
@@ -192,6 +200,11 @@ export interface InlineKeyboard {
 // ============ Interaction Event ============
 
 export interface InteractionEvent {
+  /**
+   * Boundary type: forwarded to consumers as the gateway sends it (open to
+   * additive fields). A closed `InboundInteraction` domain model can be
+   * introduced later if field-level tooling ever needs it.
+   */
   id: string;
   type: number;
   scene?: string;
@@ -211,8 +224,10 @@ export interface InteractionEvent {
       user_id?: string;
       feature_id?: string;
       message_id?: string;
-    };
-  };
+    } & OpenFields;
+  } & OpenFields;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 // ============ Gateway WebSocket Types ============
@@ -230,11 +245,15 @@ export interface RawMessageAttachment {
   filename?: string;
   voice_wav_url?: string;
   asr_refer_text?: string;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 export interface RawMsgElement {
   msg_idx?: string;
   content?: string;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
   attachments?: Array<
     RawMessageAttachment & {
       height?: number;
@@ -244,26 +263,39 @@ export interface RawMsgElement {
   >;
 }
 
+/**
+ * Fields the platform sends but this SDK has not declared yet.
+ *
+ * Platform releases additive event fields before SDK type updates; consumers
+ * can still read them (`author.someNewField`) instead of escaping the type
+ * system with `as any`.
+ */
+export type OpenFields = { [key: string]: unknown };
+
 export interface C2CMessageEvent {
   id: string;
   content: string;
   timestamp: string;
-  author: { user_openid: string };
+  author: { user_openid: string; avatar?: string } & OpenFields;
   attachments?: RawMessageAttachment[];
-  message_scene?: { ext?: string[] };
+  message_scene?: { ext?: string[] } & OpenFields;
   message_type?: number;
   msg_elements?: RawMsgElement[];
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 export interface GuildMessageEvent {
   id: string;
   content: string;
   timestamp: string;
-  author: { id: string; username?: string };
+  author: { id: string; username?: string; avatar?: string } & OpenFields;
   channel_id: string;
   guild_id: string;
   attachments?: RawMessageAttachment[];
-  message_scene?: { ext?: string[] };
+  message_scene?: { ext?: string[] } & OpenFields;
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 export interface GroupMessageEvent {
@@ -274,7 +306,9 @@ export interface GroupMessageEvent {
     member_openid: string;
     username?: string;
     bot?: boolean;
-  };
+    /** Sender avatar URL; the platform started sending it as an additive field. */
+    avatar?: string;
+  } & OpenFields;
   group_openid: string;
   attachments?: RawMessageAttachment[];
   mentions?: Array<{
@@ -286,10 +320,12 @@ export interface GroupMessageEvent {
     username?: string;
     bot?: boolean;
     is_you?: boolean;
-  }>;
-  message_scene?: { source?: string; ext?: string[] };
+  } & OpenFields>;
+  message_scene?: { source?: string; ext?: string[] } & OpenFields;
   message_type?: number;
   msg_elements?: RawMsgElement[];
+  /** Platform-added fields not declared here. */
+  [key: string]: unknown;
 }
 
 // ============ Account ============

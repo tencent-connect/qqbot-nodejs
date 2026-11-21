@@ -4,6 +4,7 @@
 
 * **sdk:** 新增 `bot.connectionState` 与 `connection` 事件，无需自行组合多个事件即可读取或监听连接状态
 * **sdk:** 新增 `bot.ping` 与 `bot.lastHeartbeatAt`
+* **sdk:** 消息事件新增 `msg.author` 对象，可读取发送者头像；平铺的发送者字段标记废弃，未映射字段无需 `as any` 即可读取
 * **gateway:** 连接假死时自动检测并重连，不再无限挂起
 * **gateway:** 服务端要求重连时恢复原会话，并补齐断线期间的消息
 
