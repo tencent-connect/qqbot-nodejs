@@ -5,13 +5,17 @@ import WebSocket, { WebSocketServer } from 'ws';
 /** Fast, deterministic reconnect budget for tests (replaces global timer spies). */
 export const FAST_RETRY = { delays: [1], maxAttempts: 3 };
 
-export const OP = { DISPATCH: 0, IDENTIFY: 2, RESUME: 6, RECONNECT: 7, INVALID_SESSION: 9, HELLO: 10 } as const;
+export const OP = { DISPATCH: 0, HEARTBEAT: 1, IDENTIFY: 2, RESUME: 6, RECONNECT: 7, INVALID_SESSION: 9, HELLO: 10, HEARTBEAT_ACK: 11 } as const;
 
-/** Default server behaviour: HELLO, then READY / RESUMED for IDENTIFY / RESUME. */
+/** Default server behaviour: HELLO, then READY / RESUMED for IDENTIFY / RESUME and ACKs heartbeats. */
 export function serveSession(ws: WebSocket): void {
   ws.send(JSON.stringify({ op: OP.HELLO, d: { heartbeat_interval: 100_000 } }));
   ws.on('message', (data) => {
     const { op } = JSON.parse(data.toString()) as { op: number };
+    if (op === OP.HEARTBEAT) {
+      ws.send(JSON.stringify({ op: OP.HEARTBEAT_ACK }));
+      return;
+    }
     if (op === OP.IDENTIFY || op === OP.RESUME) {
       ws.send(JSON.stringify({
         op: OP.DISPATCH,

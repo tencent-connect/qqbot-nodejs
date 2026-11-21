@@ -220,6 +220,8 @@ export type QQBotEventMap = {
   ready: (data: unknown) => void;
   resumed: (data: unknown) => void;
   disconnected: (event: GatewayDisconnect) => void;
+  /** Transport connection state transition (`connectionState` is the same value, readable at any time). */
+  connection: (state: ConnectionState, previous: ConnectionState) => void;
   error: (err: Error) => void;
   message: (ctx: MiddlewareContext, msg: QQBotInboundMessage) => void | Promise<void>;
   interaction: (ctx: InteractionContext, event: InteractionEvent) => void | Promise<void>;
@@ -242,6 +244,22 @@ export type QQBotEventMap = {
    */
   rawEvent: (ctx: RawEventContext) => void | Promise<void>;
 };
+
+/**
+ * Transport connection state, readable at any time via
+ * {@link QQBot.connectionState} without subscribing to events.
+ *
+ * - `idle`: never started, or stopped.
+ * - `connecting`: startup (IDENTIFY) or an automatic reconnect is in progress.
+ * - `resuming`: a reconnect is recovering the previous session via RESUME.
+ * - `connected`: the WS gateway completed READY/RESUMED, or the webhook
+ *   server is listening.
+ * - `disconnected`: startup failed, or the gateway gave up reconnecting.
+ *
+ * Custom `EventTransport` implementations have no ready signal, so they stay
+ * `connecting` until the run ends.
+ */
+export type ConnectionState = "idle" | "connecting" | "resuming" | "connected" | "disconnected";
 
 /**
  * Augmented inbound message with a ready-to-use `replyTarget`.
@@ -286,6 +304,7 @@ export class QQBot {
     ready: new Set(),
     resumed: new Set(),
     disconnected: new Set(),
+    connection: new Set(),
     error: new Set(),
     message: new Set(),
     interaction: new Set(),
@@ -294,6 +313,12 @@ export class QQBot {
 
   private gateway: GatewayConnection | null = null;
   private abortController: AbortController | null = null;
+  /** Mutated only by the start/stop lifecycle and the transport callbacks. */
+  private _connectionState: ConnectionState = "idle";
+  /** Last heartbeat ACK latency in ms; -1 before the first ACK of the current run. */
+  private _ping = -1;
+  /** Timestamp of the last heartbeat ACK; undefined until the first ACK of the current run. */
+  private _lastHeartbeatAt: number | undefined;
   private _apiGateway: ApiGateway | null = null;
 
   constructor(options: QQBotOptions) {
@@ -376,6 +401,24 @@ export class QQBot {
   /** The QQ Open Platform AppID this bot is bound to. */
   get appId(): string {
     return this.creds.appId;
+  }
+
+  /**
+   * Current transport connection state. Read it any time instead of tracking
+   * `ready` / `resumed` / `disconnected` yourself.
+   */
+  get connectionState(): ConnectionState {
+    return this._connectionState;
+  }
+
+  /** Last heartbeat ACK latency in milliseconds, or `-1` before the first ACK. */
+  get ping(): number {
+    return this._ping;
+  }
+
+  /** Last heartbeat ACK timestamp (epoch ms), or `undefined` before the first ACK. */
+  get lastHeartbeatAt(): number | undefined {
+    return this._lastHeartbeatAt;
   }
 
   /** The stable account id (defaults to appId). */
@@ -481,6 +524,9 @@ export class QQBot {
       externalSignal?.addEventListener("abort", onAbort, { once: true });
     }
 
+    this.setConnectionState("connecting");
+    this._ping = -1;
+    this._lastHeartbeatAt = undefined;
     try {
       if (controller.signal.aborted) return;
       const transportMode = this.opts.transport ?? "websocket";
@@ -491,9 +537,17 @@ export class QQBot {
       } else {
         await this.startCustomTransport(transportMode, controller.signal);
       }
+    } catch (error) {
+      // 启动失败是终态：留给 stop()/下一次 start() 重置
+      this.setConnectionState("disconnected");
+      throw error;
     } finally {
       externalSignal?.removeEventListener("abort", onAbort);
-      if (this.abortController === controller) this.releaseRun();
+      if (this.abortController === controller) {
+        this.releaseRun();
+        // 正常结束（stop/abort）回到 idle；保留启动失败留下的 disconnected
+        if (this._connectionState !== "disconnected") this.setConnectionState("idle");
+      }
     }
   }
 
@@ -506,7 +560,15 @@ export class QQBot {
   stop(): void {
     const controller = this.abortController;
     this.releaseRun();
+    this.setConnectionState("idle");
     controller?.abort();
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (this._connectionState === state) return;
+    const previous = this._connectionState;
+    this._connectionState = state;
+    void this.emit("connection", state, previous);
   }
 
   private releaseRun(): void {
@@ -560,17 +622,34 @@ export class QQBot {
       clearTokenCache: () => this.tokenManager.clearCache(this.creds.appId),
       getGatewayUrl: () => this.messageApi.getGatewayUrl(this.creds),
       onReady: (data) => {
+        this.setConnectionState("connected");
         this.logger.info?.(`[qqbot] gateway READY`);
         void this.emit("ready", data);
       },
       onResumed: (data) => {
+        this.setConnectionState("connected");
         this.logger.info?.(`[qqbot] gateway RESUMED`);
         void this.emit("resumed", data);
+      },
+      onResuming: () => {
+        this.setConnectionState("resuming");
+        this.logger.debug?.(`[qqbot] gateway resuming session`);
+      },
+      onIdentifying: () => {
+        // RESUME 被拒（session 失效）后重新 IDENTIFY：从 resuming 回到 connecting
+        this.setConnectionState("connecting");
+        this.logger.debug?.(`[qqbot] gateway identifying`);
+      },
+      onHeartbeat: (latencyMs) => {
+        this._ping = latencyMs;
+        this._lastHeartbeatAt = Date.now();
       },
       onError: (err) => {
         void this.emit("error", err);
       },
       onDisconnected: (event) => {
+        // 自动重连期间保持 connecting；willReconnect=false 表示不再恢复
+        this.setConnectionState(event.willReconnect ? "connecting" : "disconnected");
         void this.emit("disconnected", event);
       },
       onMessage: (raw) => this.handleInboundMessage(raw),
@@ -606,10 +685,12 @@ export class QQBot {
       },
       {
         onReady: (data) => {
+          this.setConnectionState("connected");
           this.logger.info?.(`[qqbot] webhook READY`);
           void this.emit("ready", data);
         },
         onResumed: (data) => {
+          this.setConnectionState("connected");
           void this.emit("resumed", data);
         },
         onError: (err) => {
