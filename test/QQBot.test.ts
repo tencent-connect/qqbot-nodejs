@@ -235,12 +235,14 @@ describe('QQBot lifecycle', () => {
     await vi.waitFor(() => expect(run.status).toBe('resolved'));
   });
 
-  it('closes with 4009 after a missed heartbeat ACK and re-identifies', async () => {
+  it('resumes after a missed heartbeat ACK triggers the 4009 reconnect', async () => {
     let beats = 0;
+    const ops: number[] = [];
     gw.onConnection = (ws) => {
       ws.send(JSON.stringify({ op: OP.HELLO, d: { heartbeat_interval: 10 } }));
       ws.on('message', (data) => {
         const { op } = JSON.parse(data.toString()) as { op: number };
+        ops.push(op);
         if (op === OP.HEARTBEAT) {
           beats += 1;
           return; // 不回 ACK：触发僵尸连接检测
@@ -248,14 +250,77 @@ describe('QQBot lifecycle', () => {
         if (op === OP.IDENTIFY) {
           ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'READY', s: 1, d: { session_id: 's1' } }));
         }
+        if (op === OP.RESUME) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'RESUMED', s: 2, d: {} }));
+        }
       });
     };
     const bot = createBot();
     const run = outcome(bot.start());
     await vi.waitFor(() => expect(beats).toBeGreaterThanOrEqual(2));
-    // 4009 → clearSession → 重连 IDENTIFY → 新连接 READY
+    // 4009 保留 session：重连事件流应从 seq 处 RESUME，而不是 IDENTIFY 新会话
+    await vi.waitFor(() => expect(gw.sockets.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(ops).toContain(OP.RESUME));
+    await vi.waitFor(() => expect(bot.connectionState).toBe('connected'));
+
+    bot.stop();
+    await vi.waitFor(() => expect(run.status).toBe('resolved'));
+  });
+
+  it('resumes after a server-requested 4009 reconnect', async () => {
+    const ops: number[] = [];
+    gw.onConnection = (ws) => {
+      ws.send(JSON.stringify({ op: OP.HELLO, d: { heartbeat_interval: 100_000 } }));
+      ws.on('message', (data) => {
+        const { op } = JSON.parse(data.toString()) as { op: number };
+        ops.push(op);
+        if (op === OP.IDENTIFY) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'READY', s: 1, d: { session_id: 's1' } }));
+        }
+        if (op === OP.RESUME) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'RESUMED', s: 2, d: {} }));
+        }
+      });
+    };
+    const bot = createBot();
+    const run = outcome(bot.start());
+    await vi.waitFor(() => expect(bot.connectionState).toBe('connected'));
+
+    // 服务端主动请求重连（连接时长到期 / 负载转移）：session 保留，可无损恢复
+    gw.sockets[0]?.close(4009, 'max connect timeout');
+    await vi.waitFor(() => expect(gw.sockets.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(ops).toContain(OP.RESUME));
+    await vi.waitFor(() => expect(bot.connectionState).toBe('connected'));
+
+    bot.stop();
+    await vi.waitFor(() => expect(run.status).toBe('resolved'));
+  });
+
+  it('re-identifies after 4006 invalid session', async () => {
+    const ops: number[] = [];
+    gw.onConnection = (ws) => {
+      ws.send(JSON.stringify({ op: OP.HELLO, d: { heartbeat_interval: 100_000 } }));
+      ws.on('message', (data) => {
+        const { op } = JSON.parse(data.toString()) as { op: number };
+        ops.push(op);
+        if (op === OP.IDENTIFY) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'READY', s: 1, d: { session_id: 's1' } }));
+        }
+        if (op === OP.RESUME) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'RESUMED', s: 2, d: {} }));
+        }
+      });
+    };
+    const bot = createBot();
+    const run = outcome(bot.start());
+    await vi.waitFor(() => expect(bot.connectionState).toBe('connected'));
+
+    // 4006 表示 session 确实失效：必须清 session，重连走 IDENTIFY
+    gw.sockets[0]?.close(4006, 'invalid session');
     await vi.waitFor(() => expect(gw.sockets.length).toBeGreaterThanOrEqual(2));
     await vi.waitFor(() => expect(bot.connectionState).toBe('connected'));
+    expect(ops).not.toContain(OP.RESUME);
+    expect(ops.filter(op => op === OP.IDENTIFY).length).toBeGreaterThanOrEqual(2);
 
     bot.stop();
     await vi.waitFor(() => expect(run.status).toBe('resolved'));

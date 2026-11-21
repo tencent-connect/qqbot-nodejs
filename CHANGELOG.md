@@ -2,16 +2,18 @@
 
 ### Features
 
-* **sdk:** `bot.connectionState` reports the transport connection state (`idle` / `connecting` / `resuming` / `connected` / `disconnected`) without subscribing to events; it tracks startup, RESUME recovery, fatal disconnects, and `stop()`
-* **sdk:** the `connection` event reports every state transition with the previous state, so consumers no longer need to combine `ready` / `resumed` / `disconnected`
-* **sdk:** `bot.ping` and `bot.lastHeartbeatAt` expose heartbeat ACK latency and recency
-* **gateway:** a heartbeat that goes unacknowledged for a full interval now closes the socket with 4009 and reconnects instead of leaving a zombie connection; a watchdog terminates the socket if even the close handshake stalls
-* **gateway:** the first heartbeat after HELLO is sent with `interval × random` jitter, so deployments no longer align their heartbeat phase with the server-assigned moment
-* **gateway:** the state falls back from `resuming` to `connecting` when RESUME is rejected and the client re-identifies
+* **sdk:** new `bot.connectionState` and `connection` event — read or watch the connection state without combining individual events
+* **sdk:** new `bot.ping` and `bot.lastHeartbeatAt`
+* **gateway:** dead connections are detected and reconnected instead of hanging
+* **gateway:** a server-requested reconnect resumes the previous session and replays messages missed while offline
+
+### Bug Fixes
+
+* **gateway:** a server-requested reconnect no longer drops the session, which could lose messages received while offline
 
 ### Behavior changes
 
-* `ConnectionState` gains a `resuming` member and `QQBotEventMap` gains a `connection` event — exhaustive switches over either need updating
+* `ConnectionState` gains `resuming` and `QQBotEventMap` gains `connection`; exhaustive switches need updating
 
 # 1.0.5 (2026-10-12)
 

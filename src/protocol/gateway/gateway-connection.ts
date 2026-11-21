@@ -487,9 +487,10 @@ export class GatewayConnection {
 
   /**
    * Send one heartbeat. A still-unacknowledged previous beat means the link
-   * is dead: close with 4009 (session timed out) so the reconnect path runs,
-   * and leave a watchdog — in a network black hole even the close handshake
-   * stalls, so terminate() after a bounded wait.
+   * is dead: close with 4009 — the server-side code for "please reconnect" —
+   * so the reconnect path runs. The session is preserved server-side, so the
+   * reconnect resumes from the last seq and replays missed events. Leave a
+   * watchdog too: in a network black hole even the close handshake stalls.
    */
   private sendHeartbeat(ws: WebSocket): void {
     const { log, account } = this.opts;
