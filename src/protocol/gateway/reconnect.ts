@@ -140,15 +140,27 @@ export class ReconnectState {
       };
     }
 
+    // 4009 是服务端"请重连"的通用关闭码（最大连接时长到期、负载转移、Ping 超时等），
+    // 服务端会保留 session 等待客户端 RESUME 并按 seq 重放断线期间的事件。
+    // 这里必须保留 session：清掉会让重连退化为 IDENTIFY 新会话，丢失积压消息。
+    if (code === GatewayCloseCode.SESSION_TIMEOUT) {
+      this.log?.info(`[${this.accountId}] Server requested reconnect (4009), will resume`);
+      return {
+        shouldReconnect: !isAborted,
+        clearSession: false,
+        refreshToken: false,
+        fatal: false,
+        reason: "server requested reconnect",
+      };
+    }
+
     if (
       code === GatewayCloseCode.INVALID_SESSION ||
-      code === GatewayCloseCode.SEQ_OUT_OF_RANGE ||
-      code === GatewayCloseCode.SESSION_TIMEOUT
+      code === GatewayCloseCode.SEQ_OUT_OF_RANGE
     ) {
       const codeDesc: Record<number, string> = {
         [GatewayCloseCode.INVALID_SESSION]: "session no longer valid",
         [GatewayCloseCode.SEQ_OUT_OF_RANGE]: "invalid seq on resume",
-        [GatewayCloseCode.SESSION_TIMEOUT]: "session timed out",
       };
       this.log?.info(`[${this.accountId}] Error ${code} (${codeDesc[code]}), will re-identify`);
       return {
