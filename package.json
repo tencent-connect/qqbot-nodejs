@@ -1,6 +1,6 @@
 {
   "name": "@tencent-connect/qqbot-nodejs",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Tencent QQ Bot Node.js SDK — protocol-level client for the QQ Open Platform (HTTP + WebSocket Gateway, message + media + streaming).",
   "type": "module",
   "main": "./dist/index.js",

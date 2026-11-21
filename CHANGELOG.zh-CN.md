@@ -1,3 +1,18 @@
+# 1.0.6 (unreleased)
+
+### 新特性
+
+* **sdk:** 新增 `bot.connectionState`，无需订阅事件即可随时读取运输层连接状态（`idle` / `connecting` / `resuming` / `connected` / `disconnected`）；覆盖启动、RESUME 恢复、致命掉线与 `stop()`
+* **sdk:** 新增 `connection` 事件，每次状态迁移都会带上前一状态上报，使用方不再需要自行组合 `ready` / `resumed` / `disconnected`
+* **sdk:** 新增 `bot.ping` 与 `bot.lastHeartbeatAt`，暴露心跳 ACK 延迟与最近一次 ACK 时间
+* **gateway:** 整个心跳间隔内未收到 ACK 时，主动以 4009 断开并重连，不再留僵尸连接；若 close 握手也被挂起，看门狗会强制 terminate
+* **gateway:** HELLO 后的首拍心跳以 `interval × random` 抖动发送，避免大规模部署下心跳相位与服务器下发时刻对齐
+* **gateway:** RESUME 被拒后重新 IDENTIFY 时，状态从 `resuming` 回落到 `connecting`
+
+### 行为变更
+
+* `ConnectionState` 新增 `resuming` 成员、`QQBotEventMap` 新增 `connection` 事件——对二者做穷举 switch 的代码需要同步更新
+
 # 1.0.5 (2026-10-12)
 
 ### 新特性

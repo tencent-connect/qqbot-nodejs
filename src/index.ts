@@ -34,6 +34,7 @@
 export { QQBot } from "./QQBot.js";
 export { MsgType } from "./QQBot.js";
 export type {
+  ConnectionState,
   QQBotOptions,
   QQBotEventMap,
   QQBotInboundMessage,

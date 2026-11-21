@@ -82,6 +82,12 @@ export interface GatewayConnectionOptions {
   // ---- Event handlers ----
   onReady?: (data: unknown) => void;
   onResumed?: (data: unknown) => void;
+  /** Called when a reconnect sends RESUME (session recovery) before RESUMED/READY arrives. */
+  onResuming?: () => void;
+  /** Called when a connection sends IDENTIFY (fresh session: first connect, or RESUME was rejected). */
+  onIdentifying?: () => void;
+  /** Heartbeat ACK latency in milliseconds, measured from heartbeat send to ACK. */
+  onHeartbeat?: (latencyMs: number) => void;
   /** Recoverable failures (connect errors, socket errors). Terminal failures reject `start()` instead. */
   onError?: (error: Error) => void;
   onDisconnected?: (event: GatewayDisconnect) => void;
@@ -97,6 +103,14 @@ export class GatewayConnection {
   private finish: (error?: Error) => void = () => {};
   private currentWs: WebSocket | null = null;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  /** Server-provided heartbeat interval of the current connection (0 before HELLO). */
+  private heartbeatIntervalMs = 0;
+  /** Forces terminate() when the zombie-close handshake stalls in a network black hole. */
+  private zombieWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /** True while a heartbeat is awaiting its ACK; a second beat without ACK means a zombie link. */
+  private awaitingHeartbeatAck = false;
+  /** Send timestamp of the in-flight heartbeat (0 when none is pending). */
+  private lastHeartbeatSentAt = 0;
   private sessionId: string | null = null;
   private lastSeq: number | null = null;
   private isConnecting = false;
@@ -204,6 +218,12 @@ export class GatewayConnection {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
+    }
+    this.awaitingHeartbeatAck = false;
+    this.lastHeartbeatSentAt = 0;
+    if (this.zombieWatchdog) {
+      clearTimeout(this.zombieWatchdog);
+      this.zombieWatchdog = null;
     }
     const ws = this.currentWs;
     // Retire ownership before close: ws can emit error/close after a replacement exists.
@@ -358,8 +378,16 @@ export class GatewayConnection {
         this.handleDispatch(payload);
         break;
 
-      case GatewayOp.HEARTBEAT_ACK:
+      case GatewayOp.HEARTBEAT_ACK: {
+        this.awaitingHeartbeatAck = false;
+        if (this.lastHeartbeatSentAt !== 0) {
+          const latency = Date.now() - this.lastHeartbeatSentAt;
+          this.lastHeartbeatSentAt = 0;
+          const { onHeartbeat } = this.opts;
+          if (onHeartbeat) this.notify("onHeartbeat", () => onHeartbeat(latency));
+        }
         break;
+      }
 
       case GatewayOp.RECONNECT:
         this.handleGatewayReconnect("Gateway requested reconnect");
@@ -412,6 +440,8 @@ export class GatewayConnection {
   private handleHello(ws: WebSocket, d: unknown, accessToken: string): void {
     const intents = this.opts.intents ?? FULL_INTENTS;
     if (this.sessionId && this.lastSeq !== null) {
+      const { onResuming } = this.opts;
+      if (onResuming) this.notify("onResuming", () => onResuming());
       ws.send(
         JSON.stringify({
           op: GatewayOp.RESUME,
@@ -423,6 +453,8 @@ export class GatewayConnection {
         }),
       );
     } else {
+      const { onIdentifying } = this.opts;
+      if (onIdentifying) this.notify("onIdentifying", () => onIdentifying());
       ws.send(
         JSON.stringify({
           op: GatewayOp.IDENTIFY,
@@ -439,11 +471,44 @@ export class GatewayConnection {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
+    this.heartbeatIntervalMs = interval;
+    // HELLO 后先以 interval×random 的抖动发首拍（避免大规模部署下
+    // 心跳相位与服务器下发时刻对齐），之后按固定间隔
+    const jitter = Math.max(1, Math.floor(Math.random() * interval));
+    setTimeout(() => {
+      if (ws === this.currentWs) this.sendHeartbeat(ws);
+    }, jitter);
     this.heartbeatInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ op: GatewayOp.HEARTBEAT, d: this.lastSeq }));
-      }
+      if (ws !== this.currentWs) return;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      this.sendHeartbeat(ws);
     }, interval);
+  }
+
+  /**
+   * Send one heartbeat. A still-unacknowledged previous beat means the link
+   * is dead: close with 4009 (session timed out) so the reconnect path runs,
+   * and leave a watchdog — in a network black hole even the close handshake
+   * stalls, so terminate() after a bounded wait.
+   */
+  private sendHeartbeat(ws: WebSocket): void {
+    const { log, account } = this.opts;
+    if (this.awaitingHeartbeatAck) {
+      log?.warn?.(`[${account.accountId}] Heartbeat ACK timeout, closing ${GatewayCloseCode.SESSION_TIMEOUT}`);
+      ws.close(GatewayCloseCode.SESSION_TIMEOUT, "heartbeat ACK timeout");
+      if (this.zombieWatchdog) clearTimeout(this.zombieWatchdog);
+      this.zombieWatchdog = setTimeout(() => {
+        this.zombieWatchdog = null;
+        if (ws.readyState !== WebSocket.CLOSED) {
+          log?.warn?.(`[${account.accountId}] Close handshake stalled, terminating`);
+          ws.terminate();
+        }
+      }, Math.max(1_000, Math.min(this.heartbeatIntervalMs, 5_000)));
+      return;
+    }
+    this.awaitingHeartbeatAck = true;
+    this.lastHeartbeatSentAt = Date.now();
+    ws.send(JSON.stringify({ op: GatewayOp.HEARTBEAT, d: this.lastSeq }));
   }
 
   /** Opcode 7 / 9: drop the socket locally and reconnect. */
