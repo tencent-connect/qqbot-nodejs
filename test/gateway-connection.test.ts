@@ -148,6 +148,59 @@ describe('GatewayConnection recovery', () => {
     expect(onDisconnected).toHaveBeenLastCalledWith({ code: 4004, reason: 'invalid token', willReconnect: false });
   });
 
+  it.each([
+    { label: 'missing', hello: {} },
+    { label: 'non-numeric string', hello: { heartbeat_interval: 'soon' } },
+    { label: 'zero', hello: { heartbeat_interval: 0 } },
+    { label: 'not a number', hello: { heartbeat_interval: null } },
+  ])('treats a malformed HELLO interval (%s) as a protocol failure, not a heartbeat storm', async ({ hello }) => {
+    const clientFrames: number[] = [];
+    gw.onConnection = (ws) => {
+      ws.send(JSON.stringify({ op: OP.HELLO, d: hello }));
+      ws.on('message', (data) => clientFrames.push((JSON.parse(data.toString()) as { op: number }).op));
+    };
+    const onDisconnected = vi.fn();
+    const { gateway } = connection({ onDisconnected });
+    const run = outcome(gateway.start());
+
+    await vi.waitFor(() => expect(run.status).toBe('rejected'));
+    expect(run.error).toMatchObject({ code: GatewayErrorCode.RETRY_EXHAUSTED });
+    // 1 initial connect + one per allowed attempt; each failed on the malformed HELLO.
+    expect(gw.sockets).toHaveLength(1 + FAST_RETRY.maxAttempts);
+    expect(onDisconnected).toHaveBeenLastCalledWith({
+      code: 1000,
+      reason: 'Invalid HELLO heartbeat interval',
+      willReconnect: false,
+    });
+    // Bail happens before IDENTIFY/RESUME and no heartbeat is ever sent.
+    expect(clientFrames).toEqual([]);
+  });
+
+  it('accepts a numeric-string heartbeat interval from the HELLO payload', async () => {
+    gw.onConnection = (ws) => {
+      ws.send(JSON.stringify({ op: OP.HELLO, d: { heartbeat_interval: '100000' } }));
+      ws.on('message', (data) => {
+        const { op } = JSON.parse(data.toString()) as { op: number };
+        if (op === OP.HEARTBEAT) {
+          ws.send(JSON.stringify({ op: OP.HEARTBEAT_ACK }));
+          return;
+        }
+        if (op === OP.IDENTIFY || op === OP.RESUME) {
+          ws.send(JSON.stringify({ op: OP.DISPATCH, t: 'READY', s: 1, d: { session_id: 'test-session' } }));
+        }
+      });
+    };
+    const onReady = vi.fn();
+    const onDisconnected = vi.fn();
+    const { gateway } = connection({ onReady, onDisconnected });
+    const run = outcome(gateway.start());
+
+    await vi.waitFor(() => expect(onReady).toHaveBeenCalledOnce());
+    expect(gw.sockets).toHaveLength(1);
+    expect(onDisconnected).not.toHaveBeenCalled();
+    expect(run.status).toBe('pending');
+  });
+
   it('times out a black-holed handshake and keeps retrying', async () => {
     const blackhole = await startBlackhole();
     try {

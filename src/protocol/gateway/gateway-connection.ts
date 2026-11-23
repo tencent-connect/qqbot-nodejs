@@ -107,6 +107,8 @@ export class GatewayConnection {
   private heartbeatIntervalMs = 0;
   /** Forces terminate() when the zombie-close handshake stalls in a network black hole. */
   private zombieWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /** Jittered first heartbeat after HELLO; tracked so cleanup() can release it immediately. */
+  private firstBeatTimer: ReturnType<typeof setTimeout> | null = null;
   /** True while a heartbeat is awaiting its ACK; a second beat without ACK means a zombie link. */
   private awaitingHeartbeatAck = false;
   /** Send timestamp of the in-flight heartbeat (0 when none is pending). */
@@ -224,6 +226,10 @@ export class GatewayConnection {
     if (this.zombieWatchdog) {
       clearTimeout(this.zombieWatchdog);
       this.zombieWatchdog = null;
+    }
+    if (this.firstBeatTimer) {
+      clearTimeout(this.firstBeatTimer);
+      this.firstBeatTimer = null;
     }
     const ws = this.currentWs;
     // Retire ownership before close: ws can emit error/close after a replacement exists.
@@ -438,6 +444,18 @@ export class GatewayConnection {
   }
 
   private handleHello(ws: WebSocket, d: unknown, accessToken: string): void {
+    // Validate before IDENTIFY/RESUME: a malformed interval would clamp
+    // setInterval to 1ms and cause a heartbeat storm.
+    const interval = readHeartbeatInterval(d);
+    if (interval === null) {
+      const { log, account } = this.opts;
+      log?.error(
+        `[${account.accountId}] Invalid HELLO heartbeat interval: ${previewPayload(d)}`,
+      );
+      this.handleGatewayReconnect("Invalid HELLO heartbeat interval");
+      return;
+    }
+
     const intents = this.opts.intents ?? FULL_INTENTS;
     if (this.sessionId && this.lastSeq !== null) {
       const { onResuming } = this.opts;
@@ -467,7 +485,6 @@ export class GatewayConnection {
       );
     }
 
-    const interval = (d as { heartbeat_interval: number }).heartbeat_interval;
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
@@ -475,7 +492,8 @@ export class GatewayConnection {
     // HELLO 后先以 interval×random 的抖动发首拍（避免大规模部署下
     // 心跳相位与服务器下发时刻对齐），之后按固定间隔
     const jitter = Math.max(1, Math.floor(Math.random() * interval));
-    setTimeout(() => {
+    this.firstBeatTimer = setTimeout(() => {
+      this.firstBeatTimer = null;
       if (ws === this.currentWs) this.sendHeartbeat(ws);
     }, jitter);
     this.heartbeatInterval = setInterval(() => {
@@ -544,6 +562,20 @@ export class GatewayConnection {
 
 function toError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
+ * Read the HELLO heartbeat interval; numeric strings are coerced so a
+ * server-side serialization change stays non-breaking. Returns `null` for
+ * any value that cannot schedule a sane heartbeat.
+ */
+function readHeartbeatInterval(d: unknown): number | null {
+  const raw = (d as { heartbeat_interval?: unknown }).heartbeat_interval;
+  const value = typeof raw === "string" ? Number(raw.trim()) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return value;
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
