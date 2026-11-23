@@ -18,6 +18,7 @@
   "files": [
     "dist",
     "src",
+    "assets/docs",
     "README.md",
     "README.zh-CN.md",
     "USAGE.md",

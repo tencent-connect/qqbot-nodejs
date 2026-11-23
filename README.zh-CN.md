@@ -11,6 +11,19 @@ Tencent QQ Open Platform Node.js SDK。提供与 QQ 机器人开放平台对接�
 协议层能力：HTTP REST、WebSocket / Webhook 双传输、Koa-style 中间件管线、
 消息收发、媒体上传（含大文件分块）、C2C 流式消息（stream_messages）。
 
+## 资源与社区
+
+- **[QQ 开放平台官方文档](https://bot.q.qq.com/wiki/develop/api-v2/)** — 平台 API、事件与错误码的一手定义。
+
+扫码添加反馈小助手 / 加入开发者频道
+
+<table align="center">
+<tr>
+<td align="center" width="50%"><img src="./assets/docs/feedback.jpg" height="360" alt="反馈小助手二维码" /><br /><b>反馈小助手</b><br /><sub>QQ 机器人开放平台官方小助手 · 工单服务时间：工作日 10:00–20:00</sub></td>
+<td align="center" width="50%"><img src="./assets/docs/qqchannel.jpg" height="360" alt="QQ 频道二维码" /><br /><b>QQ 开发者社区频道</b><br /><sub>频道号: 20dnumts4z</sub></td>
+</tr>
+</table>
+
 ## 环境要求
 
 - Node.js **>= 20**（依赖全局 `fetch` 与 `AbortController`）。

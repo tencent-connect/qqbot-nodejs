@@ -13,6 +13,20 @@ Webhook transport, a Koa-style middleware pipeline, messaging, media upload
 (including chunked upload for large files), and C2C streaming messages
 (`stream_messages`).
 
+## Resources & community
+
+- **[Official QQ Bot platform docs](https://bot.q.qq.com/wiki/develop/api-v2/)** —
+  first-hand API, event and error-code definitions (in Chinese).
+
+Scan to add the feedback assistant bot / join the developer channel:
+
+<table align="center">
+<tr>
+<td align="center" width="50%"><img src="./assets/docs/feedback.jpg" height="360" alt="Feedback assistant QR code" /><br /><b>Feedback Assistant</b><br /><sub>Official QQ Bot platform assistant · Support hours: weekdays 10:00–20:00</sub></td>
+<td align="center" width="50%"><img src="./assets/docs/qqchannel.jpg" height="360" alt="QQ channel QR code" /><br /><b>QQ Developer Community Channel</b><br /><sub>Channel ID: 20dnumts4z</sub></td>
+</tr>
+</table>
+
 ## Requirements
 
 - Node.js **>= 20** (uses global `fetch` / `AbortController`)
